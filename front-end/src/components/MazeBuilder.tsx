@@ -1,0 +1,392 @@
+import { useState } from 'react';
+import Button from './Button';
+import MazeKey from './MazeKey';
+import MazeGrid from './MazeGrid';
+
+// Utility functions for parsing maze data from CSV and JSON formats
+// Parses CSV with optional start/end points in first two lines
+function parseMazeCSV(csv: string): { maze: number[][], start?: [number, number], end?: [number, number] } {
+  const lines = csv.trim().split(/\r?\n/);
+  let start: [number, number] | undefined;
+  let end: [number, number] | undefined;
+  let mazeLines: string[] = lines;
+  if (lines.length > 2 && lines[0].match(/^\d+,\d+$/) && lines[1].match(/^\d+,\d+$/)) {
+    start = lines[0].split(',').map(Number) as [number, number];
+    end = lines[1].split(',').map(Number) as [number, number];
+    mazeLines = lines.slice(2);
+  }
+  const maze = mazeLines.map(row => row.split(',').map(cell => parseInt(cell, 10)));
+  return { maze, start, end };
+}
+
+function parseMazeJSON(json: string): number[][] {
+  try {
+    const arr = JSON.parse(json);
+    if (Array.isArray(arr) && arr.every(row => Array.isArray(row))) {
+      return arr;
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+// Component for the hover trigger that shows the maze key popup
+function MazeKeyHover() {
+  const [show, setShow] = useState(false);
+  return (
+    <div
+      className="maze-key-trigger"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+      tabIndex={0}
+    >
+      <div className="hamburger">
+        <div className="hamburger-line"></div>
+        <div className="hamburger-line"></div>
+        <div className="hamburger-line"></div>
+      </div>
+      {show && <MazeKey />}
+    </div>
+  );
+}
+
+interface MazeBuilderProps {
+  onBack: () => void;
+  onSendMaze: (maze: number[][], start: [number, number], end: [number, number]) => void;
+  wsConnected: boolean;
+  backendMessage?: string | null;
+  exportType: 'csv' | 'json';
+  setExportType: React.Dispatch<React.SetStateAction<'csv' | 'json'>>;
+  inputType: 'csv' | 'json';
+  setInputType: React.Dispatch<React.SetStateAction<'csv' | 'json'>>;
+  csv: string;
+  setCsv: React.Dispatch<React.SetStateAction<string>>;
+  json: string;
+  setJson: React.Dispatch<React.SetStateAction<string>>;
+  start: string;
+  setStart: React.Dispatch<React.SetStateAction<string>>;
+  end: string;
+  setEnd: React.Dispatch<React.SetStateAction<string>>;
+  maze: number[][] | null;
+  setMaze: React.Dispatch<React.SetStateAction<number[][] | null>>;
+  startPt: [number, number];
+  setStartPt: React.Dispatch<React.SetStateAction<[number, number]>>;
+  endPt: [number, number];
+  setEndPt: React.Dispatch<React.SetStateAction<[number, number]>>;
+  error: string;
+  setError: React.Dispatch<React.SetStateAction<string>>;
+}
+
+function MazeBuilder({
+  onBack,
+  onSendMaze,
+  wsConnected,
+  backendMessage = null,
+  exportType,
+  setExportType,
+  inputType,
+  setInputType,
+  csv,
+  setCsv,
+  json,
+  setJson,
+  start,
+  setStart,
+  end,
+  setEnd,
+  maze,
+  setMaze,
+  startPt,
+  setStartPt,
+  endPt,
+  setEndPt,
+  error,
+  setError
+}: MazeBuilderProps) {
+
+  // Export maze as CSV or JSON
+  const handleExportMaze = () => {
+    if (!maze) return;
+    let dataStr = '';
+    let filename = '';
+    if (exportType === 'csv') {
+      // CSV: start, end, then maze rows
+      dataStr = `${startPt[0]},${startPt[1]}\n${endPt[0]},${endPt[1]}\n` + maze.map(row => row.join(',')).join('\n');
+      filename = 'maze.csv';
+    } else {
+      // JSON: {start, end, maze}
+      dataStr = JSON.stringify({ start: startPt, end: endPt, maze }, null, 2);
+      filename = 'maze.json';
+    }
+    const blob = new Blob([dataStr], { type: exportType === 'csv' ? 'text/csv' : 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Comprehensive handler to generate and validate maze from input data
+  const handleGenerateMaze = () => {
+    setError('');
+    const MAX_INPUT_SIZE = 1000000; // 1MB of text
+    const input = inputType === 'csv' ? csv.trim() : json.trim();
+    if (input.length > MAX_INPUT_SIZE) {
+      setError('Input too large. Maximum 1MB of maze data allowed.');
+      return;
+    }
+    if (input === '') {
+      setError(`Please enter maze data in ${inputType.toUpperCase()} format.`);
+      return;
+    }
+    if (start.trim() === '') {
+      setError('Please enter start point (e.g., 0,0).');
+      return;
+    }
+    if (end.trim() === '') {
+      setError('Please enter end point (e.g., 4,4).');
+      return;
+    }
+    let m: number[][] = [];
+    let s: number[] = [];
+    let e: number[] = [];
+    if (inputType === 'csv') {
+      const parsed = parseMazeCSV(csv);
+      m = parsed.maze;
+      // If start/end found in CSV, use them
+      if (parsed.start) {
+        setStart(parsed.start.join(','));
+        s = parsed.start;
+      } else {
+        s = start.split(',').map(Number);
+      }
+      if (parsed.end) {
+        setEnd(parsed.end.join(','));
+        e = parsed.end;
+      } else {
+        e = end.split(',').map(Number);
+      }
+    } else {
+      m = parseMazeJSON(json);
+      s = start.split(',').map(Number);
+      e = end.split(',').map(Number);
+    }
+    if (m.length === 0) {
+      setError('Invalid maze data. Please check the format.');
+      return;
+    }
+    if (s.length !== 2 || e.length !== 2 || s.some(isNaN) || e.some(isNaN)) {
+      setError('Invalid start or end points. Use format like 0,0');
+      return;
+    }
+    const startPtTemp: [number, number] = [s[0], s[1]];
+    const endPtTemp: [number, number] = [e[0], e[1]];
+    const rows = m.length;
+    const cols = m[0].length;
+    if (startPtTemp[0] < 0 || startPtTemp[0] >= rows || startPtTemp[1] < 0 || startPtTemp[1] >= cols) {
+      setError('Start point is out of bounds.');
+      return;
+    }
+    if (endPtTemp[0] < 0 || endPtTemp[0] >= rows || endPtTemp[1] < 0 || endPtTemp[1] >= cols) {
+      setError('End point is out of bounds.');
+      return;
+    }
+    if (startPtTemp[0] === endPtTemp[0] && startPtTemp[1] === endPtTemp[1]) {
+      setError('Start and end points cannot be the same.');
+      return;
+    }
+    // Prevent start/end points from being on a wall
+    if (m[startPtTemp[0]][startPtTemp[1]] === 1 || m[endPtTemp[0]][endPtTemp[1]] === 1) {
+      setError("Start and end points can't be on walls (1).");
+      return;
+    }
+    setMaze(m);
+    setStartPt(startPtTemp);
+    setEndPt(endPtTemp);
+  };
+
+  // Handler to clear all maze inputs and reset state
+  const handleClear = () => {
+    setCsv('');
+    setJson('');
+    setStart('');
+    setEnd('');
+    setMaze(null);
+    setStartPt([0, 0]);
+    setEndPt([0, 0]);
+    setError('');
+  };
+
+  // Handler for importing maze data from a file
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (inputType === 'csv') {
+        setCsv(text);
+        // Try to auto-fill start/end if present
+        const parsed = parseMazeCSV(text);
+        if (parsed.start) setStart(parsed.start.join(','));
+        if (parsed.end) setEnd(parsed.end.join(','));
+      } else {
+        setJson(text);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleSendMaze = () => {
+    if (!wsConnected) {
+      setError("WebSocket is not connected. Please check connection.");
+      return;
+    }
+    if (maze) {
+      onSendMaze(maze, startPt, endPt);
+      setError('');
+    }
+  };
+
+  return (
+    <div className="builder-section">
+      <div className="builder-section-inner">
+        <h1 className="builder-title">Maze Builder</h1>
+        {error && <div className="error-message">{error}</div>}
+        <div className="builder-content">
+          {/* Left side: Maze setup and input */}
+          <div className="maze-setup">
+            <div className="maze-setup-card">
+              <div>
+                <div style={{ marginBottom: '0.5em', textAlign: 'left' }}><b>1. Import Maze</b></div>
+                <div className="data-tabs">
+                  <button className={`tab${inputType === 'csv' ? ' active' : ''}`} onClick={() => setInputType('csv')}>CSV</button>
+                  <button className={`tab${inputType === 'json' ? ' active' : ''}`} onClick={() => setInputType('json')}>JSON</button>
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <label className="import-label">
+                    Import {inputType.toUpperCase()}
+                    <input type="file" accept={inputType === 'csv' ? '.csv,.txt' : '.json,.txt'} style={{ display: 'none' }} onChange={handleImport} />
+                  </label>
+                  {inputType === 'csv' ? (
+                    <textarea
+                      className="maze-input"
+                      rows={6}
+                      placeholder="0,1,0,0,0,1,0,0,0,0\n..."
+                      value={csv}
+                      onChange={e => {
+                        setCsv(e.target.value);
+                        // Auto-fill start/end if present
+                        const parsed = parseMazeCSV(e.target.value);
+                        if (parsed.start) setStart(parsed.start.join(','));
+                        if (parsed.end) setEnd(parsed.end.join(','));
+                      }}
+                    />
+                  ) : (
+                    <textarea
+                      className="maze-input"
+                      rows={6}
+                      placeholder="[[0,1,0,0,0],[1,0,1,1,0],...]"
+                      value={json}
+                      onChange={e => setJson(e.target.value)}
+                    />
+                  )}
+                </div>
+                <div className="input-info">
+                  <span className="input-hint">
+                    {inputType === 'csv' ? '0 = open path, 1 = wall' : 'JSON array of arrays, e.g. [[0,1,0],[1,0,1]]'}
+                  </span>
+                  <Button variant="secondary" onClick={handleClear} style={{ fontSize: '0.85em', padding: '0.3em 0.8em', marginLeft: '1em' }}>Clear</Button>
+                </div>
+                <div style={{ marginTop: '1.5em', textAlign: 'left' }}>
+                  <b>2. Set Start &amp; End Points</b>
+                  <div className="points-input">
+                    <label className="start-label">Start (A)</label>
+                    <input className="start-end-input" placeholder="0,0" value={start} onChange={e => setStart(e.target.value)} />
+                    <label className="end-label">End (B)</label>
+                    <input className="start-end-input" placeholder="9,9" value={end} onChange={e => setEnd(e.target.value)} />
+                  </div>
+                </div>
+                <div className="generate-btn-container">
+                  <Button variant="primary" onClick={handleGenerateMaze}>Generate Maze</Button>
+                </div>
+              </div>
+            </div>
+          </div>
+          {/* Right side: Maze preview */}
+          <div className="maze-preview-container">
+            <div className="maze-data">
+              <h3 className="maze-data-title">Maze Preview</h3>
+              {maze ? (
+                <>
+                  <MazeGrid maze={maze} start={startPt} end={endPt} />
+                  {backendMessage && (
+                    <div
+                      style={{
+                        marginTop: "1rem",
+                        padding: "0.75rem",
+                        background: "#111",
+                        color: "#0f0",
+                        fontFamily: "monospace",
+                        fontSize: "0.85rem",
+                        borderRadius: "6px",
+                        maxHeight: "200px",
+                        overflowY: "auto",
+                        width: "100%"
+                      }}
+                    >
+                      <b>Message from Node:</b>
+                      <pre style={{ margin: 0 }}>{backendMessage}</pre>
+                    </div>
+                  )}
+                  <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '1.5em' }}>
+                    <Button className="button-run-maze" onClick={handleSendMaze}>Run Maze</Button>
+                    <div className="export-btn-group">
+                      <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                        <select
+                          className="export-dropdown"
+                          value={exportType}
+                          onChange={e => setExportType(e.target.value as 'csv' | 'json')}
+                        >
+                          <option value="csv">Export as CSV</option>
+                          <option value="json">Export as JSON</option>
+                        </select>
+                        {/* Custom dropdown arrow */}
+                        <span className="export-dropdown-arrow">▼</span>
+                      </div>
+                      <Button variant="primary" onClick={handleExportMaze}>Export Maze</Button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="maze-placeholder">Enter maze data and points, then click Generate Maze.</div>
+              )}
+            </div>
+            {maze && (
+              <MazeKeyHover />
+            )}
+          </div>
+        </div>
+        {/* Move Back button to top left of builder-section */}
+        <Button 
+          onClick={onBack}
+          style={{ 
+            position: 'absolute', 
+            top: '1.5rem', 
+            left: '2rem', 
+            zIndex: 20,
+            margin: 0
+          }}
+        >
+          Back
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export default MazeBuilder;
