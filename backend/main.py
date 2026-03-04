@@ -129,7 +129,7 @@ async def handler(websocket):
         
         # 5. Pause briefly to allow the frontend to render the frame smoothly
         await asyncio.sleep(0.1)
-    
+
     # Compute coverage across all agents and send simulation summary
     explored = set()
     for agent in agents:
