@@ -31,52 +31,7 @@ event_loop = None
 # -------------------------
 # WebSocket handler (Frontend → Python)
 # -------------------------
-async def handler(websocket):
-    connected_clients.add(websocket)
-    print("New client connected")
-
-    try:
-        async for message in websocket:
-            data = json.loads(message)
-            maze = data.get("maze")
-            start = data.get("start")
-            end = data.get("end")
-
-            import asyncio
-            import json
-            import NodeClass
-            from spawner import spawn_agents
-            from aiohttp import web, WSMsgType
-
-            connected_clients = set()
-            event_loop = None
-            node = NodeClass.Node(9000, "Node1", 0)
-
-            async def websocket_handler(request):
-                ws = web.WebSocketResponse()
-                await ws.prepare(request)
-                connected_clients.add(ws)
-                print("New client connected")
-                try:
-                    async for msg in ws:
-                        if msg.type == WSMsgType.TEXT:
-                            data = json.loads(msg.data)
-                            maze = data.get("maze")
-                            start = data.get("start")
-                            end = data.get("end")
-                            await ws.send_json({
-                                "type": "ack",
-                                "status": "Maze received. Starting swarm simulation..."
-                            })
-                            asyncio.create_task(run_live_simulation(maze, start, end, ws))
-                        elif msg.type == WSMsgType.ERROR:
-                            print(f'WebSocket connection closed with exception {ws.exception()}')
-                finally:
-                    connected_clients.remove(ws)
-                return ws
-
-            async def health_check(request):
-                return web.Response(text="OK")
+## handler function is not needed with aiohttp refactor, so remove it
 
             def on_udp_message(msg, addr):
                 print(f"Node received message: {msg} from {addr}")
