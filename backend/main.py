@@ -42,103 +42,64 @@ async def handler(websocket):
             start = data.get("start")
             end = data.get("end")
 
-            # Acknowledge receipt to the frontend
-            await websocket.send(json.dumps({
-                "type": "ack",
-                "status": "Maze received. Starting swarm simulation..."
-            }))
+            import asyncio
+            import json
+            import NodeClass
+            from spawner import spawn_agents
+            from aiohttp import web, WSMsgType
 
-            # Trigger the live simulation directly
-            asyncio.create_task(run_live_simulation(maze, start, end, websocket))
+            connected_clients = set()
+            event_loop = None
+            node = NodeClass.Node(9000, "Node1", 0)
 
-    except websockets.exceptions.ConnectionClosed:
-        print("Client disconnected")
-    finally:
-        connected_clients.remove(websocket)
+            async def websocket_handler(request):
+                ws = web.WebSocketResponse()
+                await ws.prepare(request)
+                connected_clients.add(ws)
+                print("New client connected")
+                try:
+                    async for msg in ws:
+                        if msg.type == WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            maze = data.get("maze")
+                            start = data.get("start")
+                            end = data.get("end")
+                            await ws.send_json({
+                                "type": "ack",
+                                "status": "Maze received. Starting swarm simulation..."
+                            })
+                            asyncio.create_task(run_live_simulation(maze, start, end, ws))
+                        elif msg.type == WSMsgType.ERROR:
+                            print(f'WebSocket connection closed with exception {ws.exception()}')
+                finally:
+                    connected_clients.remove(ws)
+                return ws
 
-# -------------------------
-# UDP Node listener (Node → Python)
-# -------------------------
-node = NodeClass.Node(9000, "Node1", 0)
+            async def health_check(request):
+                return web.Response(text="OK")
 
-def on_udp_message(msg, addr):
-    print(f"Node received message: {msg} from {addr}")
+            def on_udp_message(msg, addr):
+                print(f"Node received message: {msg} from {addr}")
+                asyncio.run_coroutine_threadsafe(
+                    broadcast(msg),
+                    event_loop
+                )
+            node.on_message = on_udp_message
 
-    # Forward Node message to all WebSocket clients
-    asyncio.run_coroutine_threadsafe(
-        broadcast(msg),
-        event_loop
-    )
+            async def broadcast(message):
+                if not connected_clients:
+                    return
+                try:
+                    payload = json.loads(message)
+                except Exception:
+                    payload = {
+                        "type": "node_message",
+                        "payload": message
+                    }
+                msg_str = json.dumps(payload)
+                for ws in connected_clients:
+                    await ws.send_str(msg_str)
 
-
-node.on_message = on_udp_message
-
-
-# -------------------------
-# Broadcast to all connected WebSocket clients
-# -------------------------
-async def broadcast(message):
-    if not connected_clients:
-        return
-
-    # If message is already JSON, forward as-is
-    try:
-        payload = json.loads(message)
-    except Exception:
-        payload = {
-            "type": "node_message",
-            "payload": message
-        }
-
-    msg_str = json.dumps(payload)
-
-    await asyncio.gather(
-        *(ws.send(msg_str) for ws in connected_clients)
-    )
-
-
-# -------------------------
-# Simulation logic (Node → Python → Frontend)
-# -------------------------
-async def run_live_simulation(maze, start, end, websocket):
-    # 1. Spawn the swarm using your existing spawner logic
-    agents = spawn_agents(maze, tuple(start))
-    
-    # Start UDP listeners for all agents so they can communicate with each other
-    listener_tasks = [asyncio.create_task(agent.web_listen()) for agent in agents]
-    
-    # Register agents for frontend agent list
-    for agent in agents:
-        await websocket.send(json.dumps({
-            "type": "agent_registered",
-            "agent_name": agent.name,
-            "agent_id": agent.agent_id,
-            "position": list(agent.current_position),
-            "status": "exploring"
-        }))
-    
-    tick = 0
-    goal_reached = False
-    
-    # 2. Run the simulation loop
-    while not goal_reached and tick < 500: # Add a max_ticks failsafe
-        tick += 1
-        
-        # Array to hold the state of all agents for the frontend
-        agent_data = []
-        
-        for agent in agents:
-            # Execute the agent's logic for this tick
-            # Note: You may need to adapt this depending on how agent.tick() 
-            # receives the global/local view in your exact implementation
-            agent.tick(maze) 
-            
-            # Check if anyone found the end
-            if agent.current_position == tuple(end):
-                goal_reached = True
-                # Send log to frontend activity page
-                await websocket.send(json.dumps({
-                    "type": "agent_goal_reached",
                     "agent_name": agent.name,
                     "agent_id": agent.agent_id,
                     "position": list(agent.current_position),
@@ -200,18 +161,19 @@ async def main():
     global event_loop
     event_loop = asyncio.get_running_loop()  
 
-    ws_server = await websockets.serve(handler, "0.0.0.0", 10000)
+    global event_loop
+    event_loop = asyncio.get_running_loop()
+    app = web.Application()
+    app.router.add_get('/ws', websocket_handler)
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 10000)
+    await site.start()
+    print("🚀 aiohttp server running on http://0.0.0.0:10000 (WebSocket at /ws)")
     udp_listener = asyncio.create_task(node.web_listen())
-
-    print("🚀 WebSocket server running on ws://localhost:10000")
-
-    await asyncio.gather(
-        ws_server.wait_closed(),
-        udp_listener
-    )
+    await udp_listener
 
 
 if __name__ == "__main__":
-    # Start health check server in a separate thread
-    threading.Thread(target=run_health_server, daemon=True).start()
     asyncio.run(main())
