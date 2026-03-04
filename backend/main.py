@@ -99,13 +99,6 @@ async def handler(websocket):
                 msg_str = json.dumps(payload)
                 for ws in connected_clients:
                     await ws.send_str(msg_str)
-
-                    "agent_name": agent.name,
-                    "agent_id": agent.agent_id,
-                    "position": list(agent.current_position),
-                    "tick": tick
-                }))
-            
             # Package the agent's current state
             agent_data.append({
                 "id": agent.agent_id,
