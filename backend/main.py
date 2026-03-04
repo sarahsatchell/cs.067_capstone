@@ -1,59 +1,70 @@
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
-# -------------------------
-# HTTP Health Check Endpoint
-# -------------------------
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b'OK')
-    def do_HEAD(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-
-def run_health_server():
-    server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
-    server.serve_forever()
-
 import asyncio
 import json
-import websockets
 import NodeClass
 from spawner import spawn_agents
+from aiohttp import web, WSMsgType
 
 connected_clients = set()
-event_loop = None  
+event_loop = None
+node = NodeClass.Node(9000, "Node1", 0)
 
+async def websocket_handler(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    connected_clients.add(ws)
+    print("New client connected")
+    try:
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                data = json.loads(msg.data)
+                maze = data.get("maze")
+                start = data.get("start")
+                end = data.get("end")
+                await ws.send_json({
+                    "type": "ack",
+                    "status": "Maze received. Starting swarm simulation..."
+                })
+                asyncio.create_task(run_live_simulation(maze, start, end, ws))
+            elif msg.type == WSMsgType.ERROR:
+                print(f'WebSocket connection closed with exception {ws.exception()}')
+    finally:
+        connected_clients.remove(ws)
+    return ws
 
-# -------------------------
-# WebSocket handler (Frontend → Python)
-# -------------------------
-## handler function is not needed with aiohttp refactor, so remove it
+async def health_check(request):
+    return web.Response(text="OK")
 
-            def on_udp_message(msg, addr):
-                print(f"Node received message: {msg} from {addr}")
-                asyncio.run_coroutine_threadsafe(
-                    broadcast(msg),
-                    event_loop
-                )
-            node.on_message = on_udp_message
+def on_udp_message(msg, addr):
+    print(f"Node received message: {msg} from {addr}")
+    asyncio.run_coroutine_threadsafe(
+        broadcast(msg),
+        event_loop
+    )
 
-            async def broadcast(message):
-                if not connected_clients:
-                    return
-                try:
-                    payload = json.loads(message)
-                except Exception:
-                    payload = {
-                        "type": "node_message",
-                        "payload": message
-                    }
-                msg_str = json.dumps(payload)
-                for ws in connected_clients:
-                    await ws.send_str(msg_str)
+node.on_message = on_udp_message
+
+async def broadcast(message):
+    if not connected_clients:
+        return
+    try:
+        payload = json.loads(message)
+    except Exception:
+        payload = {
+            "type": "node_message",
+            "payload": message
+        }
+    msg_str = json.dumps(payload)
+    for ws in connected_clients:
+        await ws.send_str(msg_str)
+
+async def run_live_simulation(maze, start, end, websocket):
+    agents, goal_reached, tick = await spawn_agents(maze, start, end)
+    
+    while not goal_reached and tick < 1000:
+        tick += 1
+        agent_data = []
+        
+        for agent in agents:
             # Package the agent's current state
             agent_data.append({
                 "id": agent.agent_id,
@@ -80,7 +91,7 @@ event_loop = None
         }
         
         # 4. Send the data to the frontend
-        await websocket.send(json.dumps(payload))
+        await websocket.send_str(json.dumps(payload))
         
         # 5. Pause briefly to allow the frontend to render the frame smoothly
         await asyncio.sleep(0.1)
@@ -93,7 +104,7 @@ event_loop = None
     total_open = sum(1 for row in maze for cell in row if cell == 0)
     explored_pct = (len(explored) / total_open * 100) if total_open > 0 else 0
 
-    await websocket.send(json.dumps({
+    await websocket.send_str(json.dumps({
         "type": "simulation_complete",
         "goal_reached": goal_reached,
         "tick": tick,
@@ -106,9 +117,6 @@ event_loop = None
 # Main entry point
 # -------------------------
 async def main():
-    global event_loop
-    event_loop = asyncio.get_running_loop()  
-
     global event_loop
     event_loop = asyncio.get_running_loop()
     app = web.Application()
