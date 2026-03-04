@@ -200,10 +200,10 @@ async def main():
     global event_loop
     event_loop = asyncio.get_running_loop()  
 
-    ws_server = await websockets.serve(handler, "0.0.0.0", 8080)
+    ws_server = await websockets.serve(handler, "0.0.0.0", 10000)
     udp_listener = asyncio.create_task(node.web_listen())
 
-    print("🚀 WebSocket server running on ws://localhost:8080")
+    print("🚀 WebSocket server running on ws://localhost:10000")
 
     await asyncio.gather(
         ws_server.wait_closed(),
