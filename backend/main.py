@@ -177,12 +177,20 @@ async def run_live_simulation(maze, start, end, websocket):
 # -------------------------
 # Main entry point
 # -------------------------
+async def process_request(path, request_headers):
+    """Handle HTTP health checks from Render"""
+    # Respond to health checks (GET/HEAD /)
+    if path == "/" or path == "/health":
+        return (200, [("Content-Type", "text/plain")], b"OK")
+    # Let WebSocket upgrade through
+    return None
+
 async def main():
     global event_loop
     event_loop = asyncio.get_running_loop()  
 
     port = int(os.environ.get('PORT', 8080))
-    ws_server = await websockets.serve(handler, "0.0.0.0", port)
+    ws_server = await websockets.serve(handler, "0.0.0.0", port, process_request=process_request)
     udp_listener = asyncio.create_task(node.web_listen())
 
     print(f"🚀 WebSocket server running on ws://0.0.0.0:{port}")
